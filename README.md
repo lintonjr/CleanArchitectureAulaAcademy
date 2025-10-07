@@ -33,4 +33,3 @@ npm run dev
 - **usecases/**: regras de aplicação
 - **infrastructure/**: Sequelize (models, repos) e conexão
 - **interfaces/http/**: Express (rotas + validação)
-```

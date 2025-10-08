@@ -1,0 +1,1 @@
+module.exports = ({ playerRepository }) => async () => playerRepository.list();

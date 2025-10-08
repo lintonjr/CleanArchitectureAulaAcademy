@@ -1,0 +1,1 @@
+module.exports = ({ leagueRepository }) => async () => leagueRepository.list();

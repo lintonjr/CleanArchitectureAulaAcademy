@@ -1,0 +1,2 @@
+class Tournament { constructor({ id = null, leagueId, name, date, numRounds }) { this.id = id; this.leagueId = leagueId; this.name = name; this.date = date; this.numRounds = numRounds; } }
+module.exports = Tournament;

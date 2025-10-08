@@ -1,0 +1,218 @@
+pense em 4 camadas, cada uma com uma responsabilidade clara:
+
+interfaces (entrypoints / adapters)
+
+onde o mundo externo entra: HTTP (Express).
+
+valida request, traduz HTTP → chamada de caso de uso.
+
+aqui estão: src/interfaces/http/routes.js e validators.js.
+
+use cases (application)
+
+regras de aplicação: “o que fazer” (ex.: criar liga, listar torneios, associar jogador).
+
+não conhecem banco de dados nem Express. só sabem falar com interfaces de repositório.
+
+pastas: src/usecases/....
+
+domain (entidades + contratos)
+
+entidades (objetos de negócio: League, Tournament, Player).
+
+repositórios abstratos (interfaces) que os casos de uso dependem (ex.: LeagueRepository).
+
+pastas: src/domain/entities e src/domain/repositories.
+
+infrastructure (implementação técnica)
+
+como persistir dados (Sequelize Models, Repositórios concretos que implementam as interfaces).
+
+migrations do sequelize-cli.
+
+pastas: src/infrastructure/..., migrations/, config/.
+
+por que isso é “clean”?
+
+dependência aponta para dentro: Interfaces/UseCases dependem só de abstrações (contratos), nunca da infraestrutura.
+
+você pode trocar o banco (MySQL → Postgres/Dynamo) mudando apenas a infra; o resto permanece.
+
+quem chama quem? (fluxos típicos)
+0) bootstrap
+
+src/server.js sobe o Express e testa a conexão Sequelize (sequelize.authenticate()).
+
+src/app.js registra middlewares (JSON, logs) e o roteador /api.
+
+1) request HTTP → caso de uso → repositório → banco
+exemplo A: criar uma liga
+
+HTTP: POST /api/leagues { "name": "Liga Norte" } chega em routes.js.
+
+validação: validators.createLeague garante que name existe e é string.
+
+caso de uso: CreateLeague é instanciado com { leagueRepository } e executado.
+
+contrato: CreateLeague conhece só a interface LeagueRepository.
+
+infra: quem implementa de fato é SequelizeLeagueRepository (chama models.League.create).
+
+banco: o Model Sequelize persiste em leagues (via MySQL).
+
+resposta: volta JSON da liga criada.
+
+ASCII do fluxo:
+
+Express (routes) 
+  -> validators
+    -> UseCase (CreateLeague)
+      -> LeagueRepository (interface)
+        -> SequelizeLeagueRepository (implementação)
+          -> Sequelize Model (League)
+            -> MySQL
+
+exemplo B: criar torneio vinculado à liga
+
+POST /api/tournaments com { leagueId, name, date, numRounds }
+
+CreateTournament:
+
+valida presença dos campos
+
+pergunta ao leagueRepository.findById(leagueId) (garante que a liga existe)
+
+chama tournamentRepository.create(...)
+
+SequelizeTournamentRepository grava em tournaments com league_id como FK.
+
+exemplo C: associar jogador ao torneio + pontos
+
+POST /api/tournaments/:tournamentId/players com { playerId, points }
+
+AddPlayerToTournament:
+
+valida se player e tournament existem (via repositórios)
+
+chama tournamentRepository.addPlayer(...)
+
+implementação usa o model TournamentPlayer (tabela de junção N:N), com unique (tournament_id, player_id) e campo points.
+
+exemplo D: relatório da liga (acúmulo de pontos)
+
+GET /api/leagues/:id/players-with-points
+
+caso de uso ListLeaguePlayersWithPoints executa um SUM(points) por jogador, filtrando os torneios da liga.
+
+isso usa o TournamentPlayer + associações explícitas (belongsTo) para compor a query com GROUP BY e retornar [ { player, total_points } ] ordenado.
+
+banco de dados e models (Sequelize)
+migrations (estrutura física)
+
+estão em migrations/ e são executadas por sequelize-cli:
+
+leagues(id, name)
+
+players(id, name, email)
+
+tournaments(id, league_id, name, date, num_rounds)
+
+tournament_players(id, tournament_id, player_id, points) + unique(tournament_id, player_id)
+
+models (ORM)
+
+src/infrastructure/models/*.js definem os Models do Sequelize:
+
+League, Player, Tournament, TournamentPlayer.
+
+associações em src/infrastructure/db/sequelize.js:
+
+Tournament.belongsTo(League) / League.hasMany(Tournament)
+
+Player.belongsToMany(Tournament, { through: TournamentPlayer })
+
+Tournament.belongsToMany(Player, { through: TournamentPlayer })
+
+extra para relatório:
+TournamentPlayer.belongsTo(Player, { as: 'Player' })
+TournamentPlayer.belongsTo(Tournament, { as: 'Tournament' })
+(facilita include + group no SUM.)
+
+repositórios (ponte entre app e ORM)
+
+interfaces (contratos) em src/domain/repositories/*Repository.js definem o que é possível fazer.
+
+implementações em src/infrastructure/repositories/Sequelize*Repository.js dizem como fazer usando Sequelize:
+
+create/update/delete/list/findById
+
+no caso de torneios: addPlayer(tournamentId, playerId, points)
+
+por que isso é bom?
+testes de caso de uso podem “mockar” o repositório (sem banco). trocar MySQL por outro DB não quebra sua aplicação — você reimplementa só a pasta infrastructure.
+
+rotas e validação (interface HTTP)
+
+routes.js é um orquestrador fino (controller fino):
+
+injeta repositórios concretos nos casos de uso,
+
+chama o caso de uso,
+
+traduz exceções/erros em status HTTP (400/500/201/204 etc.).
+
+validators.js usa express-validator para garantir formato dos dados antes dos casos de uso (limita erro de domínio).
+
+como as regras do seu domínio aparecem
+
+liga: CRUD com único campo name.
+
+torneio: sempre pertence a uma liga; guarda name, date, numRounds.
+
+jogador: name, email (único).
+
+associação jogador↔torneio: com campo points.
+
+relatório por liga: soma points por jogador, considerando todos os torneios daquela liga.
+
+isso espelha exatamente o que você pediu — e fica extensível: amanhã dá pra adicionar rounds, partidas, standings, SoS/SB, etc., mexendo sobretudo em use cases e infra.
+
+sequência “mental” para debugar ou estender
+
+o endpoint existe? (interfaces)
+
+qual caso de uso ele chama? (usecases)
+
+quais repositórios esse caso de uso precisa? (domain → contratos)
+
+onde estão as queries/ORM? (infra → Sequelize repositórios)
+
+as migrations e associações suportam esse fluxo? (db/models)
+
+extensões comuns (opcional, mas recomendadas)
+
+Transações: ao criar vários relacionamentos em lote (ex.: inscrever vários jogadores), envolver sequelize.transaction(...).
+
+DTOs/Presenters: padronizar saída JSON dos use cases (evita vazar campos internos).
+
+Middlewares de erro: um error handler central do Express.
+
+Autenticação/autorização: middleware que checa JWT e injeta userId no request.
+
+Swagger/OpenAPI: documentar /api (mantendo controllers finos).
+
+Camada de “controller” explícita: se crescer, você pode mover handlers do routes.js para arquivos controllers/ (ainda “fino”, sem lógica de regra).
+
+resumo
+
+entrada: HTTP → routes/validators
+
+orquestração: use cases
+
+contratos: domain/repositories
+
+execução técnica: infra (Sequelize) → MySQL
+
+dados: migrations + models gerenciam o esquema e as relações
+
+relatório: um caso de uso agregador que consulta a junção N:N e soma pontos por liga

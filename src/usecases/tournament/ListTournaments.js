@@ -1,0 +1,1 @@
+module.exports = ({ tournamentRepository }) => async () => tournamentRepository.list();
